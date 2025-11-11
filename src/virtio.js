@@ -21,6 +21,7 @@ const VIRTIO_PCI_CAP_NOTIFY_CFG = 2;
 const VIRTIO_PCI_CAP_ISR_CFG = 3;
 const VIRTIO_PCI_CAP_DEVICE_CFG = 4;
 const VIRTIO_PCI_CAP_PCI_CFG = 5;
+const VIRTIO_PCI_CAP_SHARED_MEMORY_CFG = 8;
 
 // Status bits (device_status values).
 
@@ -69,7 +70,7 @@ const VIRTQ_USED_F_NO_NOTIFY = 1;
 // Closure Compiler Types.
 
 /**
- * @typedef {!Array<{
+ * @typedef {Array<{
  *     bytes: number,
  *     name: string,
  *     read: function():number,
@@ -81,13 +82,25 @@ var VirtIO_CapabilityStruct;
 /**
  * @typedef {
  * {
+ *     bytes: number,
+ *     read: function(number):number,
+ *     write: function(number, number)
+ * }}
+ */
+var VirtIO_CapabilityBytes;
+
+/**
+ * @typedef {
+ * {
  *     type: number,
  *     bar: number,
  *     port: number,
+ *     id: number,
  *     use_mmio: boolean,
  *     offset: number,
  *     extra: Uint8Array,
- *     struct: VirtIO_CapabilityStruct,
+ *     struct: (undefined | VirtIO_CapabilityStruct),
+ *     bytearray: (undefined | VirtIO_CapabilityBytes),
  * }}
  */
 var VirtIO_CapabilityInfo;
@@ -142,6 +155,16 @@ var VirtIO_DeviceSpecificCapabilityOptions;
 /**
  * @typedef {
  * {
+ *     initial_port: number,
+ *     id: (undefined | number),
+ *     backing: Uint8Array
+ * }}
+ */
+var VirtIO_ShmemCapabilityOptions;
+
+/**
+ * @typedef {
+ * {
  *     name: string,
  *     pci_id: number,
  *     device_id: number,
@@ -150,6 +173,7 @@ var VirtIO_DeviceSpecificCapabilityOptions;
  *     notification: VirtIO_NotificationCapabilityOptions,
  *     isr_status: VirtIO_ISRCapabilityOptions,
  *     device_specific: (undefined | VirtIO_DeviceSpecificCapabilityOptions),
+ *     shmem: (undefined | VirtIO_ShmemCapabilityOptions),
  * }}
  */
 var VirtIO_Options;
@@ -308,6 +332,10 @@ export function VirtIO(cpu, options)
     {
         capabilities.push(this.create_device_specific_capability(options.device_specific));
     }
+    if(options.shmem)
+    {
+        capabilities.push(this.create_shmem_capability(options.shmem));
+    }
     this.init_capabilities(capabilities);
 
     cpu.devices.pci.register_device(this);
@@ -324,6 +352,7 @@ VirtIO.prototype.create_common_capability = function(options)
         type: VIRTIO_PCI_CAP_COMMON_CFG,
         bar: 0,
         port: options.initial_port,
+        id: 0,
         use_mmio: false,
         offset: 0,
         extra: new Uint8Array(0),
@@ -639,6 +668,7 @@ VirtIO.prototype.create_notification_capability = function(options)
         type: VIRTIO_PCI_CAP_NOTIFY_CFG,
         bar: 1,
         port: options.initial_port,
+        id: 0,
         use_mmio: false,
         offset: 0,
         extra: new Uint8Array(
@@ -662,6 +692,7 @@ VirtIO.prototype.create_isr_capability = function(options)
         type: VIRTIO_PCI_CAP_ISR_CFG,
         bar: 2,
         port: options.initial_port,
+        id: 0,
         use_mmio: false,
         offset: 0,
         extra: new Uint8Array(0),
@@ -682,6 +713,7 @@ VirtIO.prototype.create_isr_capability = function(options)
     };
 };
 
+
 /**
  * @param {VirtIO_DeviceSpecificCapabilityOptions} options
  * @return {VirtIO_CapabilityInfo}
@@ -695,10 +727,57 @@ VirtIO.prototype.create_device_specific_capability = function(options)
         type: VIRTIO_PCI_CAP_DEVICE_CFG,
         bar: 3,
         port: options.initial_port,
+        id: 0,
         use_mmio: false,
         offset: 0,
         extra: new Uint8Array(0),
         struct: options.struct,
+    };
+};
+
+/**
+ * @param {VirtIO_ShmemCapabilityOptions} options
+ * @return {VirtIO_CapabilityInfo}
+ */
+VirtIO.prototype.create_shmem_capability = function(options)
+{
+    return {
+        type: VIRTIO_PCI_CAP_SHARED_MEMORY_CFG,
+        bar: 4,
+        port: options.initial_port,
+        id: options.id || 0,
+        use_mmio: true,
+        offset: 0,
+        extra: new Uint8Array([
+            0, 0, 0, 0, // offset_hi
+            0, 0, 0, 0  // length_hi
+        ]),
+        bytearray: {
+            bytes: options.backing.byteLength,
+            read: (addr) =>
+            {
+                if(addr - options.initial_port < options.backing.byteLength)
+                {
+                    return options.backing[addr - options.initial_port];
+                }
+                else
+                {
+                    dbg_log("VirtIO device<" + this.name + "> shmem capability out-of-bounds read at " + h((addr - options.initial_port) >>> 0));
+                    return 0xFF;
+                }
+            },
+            write: (addr, val) =>
+            {
+                if(addr - options.initial_port < options.backing.byteLength)
+                {
+                    options.backing[addr - options.initial_port] = val;
+                }
+                else
+                {
+                    dbg_log("VirtIO device<" + this.name + "> shmem capability out-of-bounds write at " + h((addr - options.initial_port) >>> 0));
+                }
+            }
+        }
     };
 };
 
@@ -728,7 +807,17 @@ VirtIO.prototype.init_capabilities = function(capabilities)
         dbg_assert(0 <= cap.bar && cap.bar < 6,
             "VirtIO device<" + this.name + "> capability invalid bar number");
 
-        let bar_size = cap.struct.reduce((bytes, field) => bytes + field.bytes, 0);
+        let region_length;
+        if(cap.struct)
+        {
+            region_length = cap.struct.reduce((bytes, field) => bytes + field.bytes, 0);
+        }
+        else if(cap.bytearray)
+        {
+            region_length = cap.bytearray.bytes;
+        }
+
+        let bar_size = region_length;
         bar_size += cap.offset;
 
         // Round up to next power of 2,
@@ -749,7 +838,7 @@ VirtIO.prototype.init_capabilities = function(capabilities)
         this.pci_space[cap_ptr + 3] = cap.type;
         this.pci_space[cap_ptr + 4] = cap.bar;
 
-        this.pci_space[cap_ptr + 5] = 0; // Padding.
+        this.pci_space[cap_ptr + 5] = cap.id;
         this.pci_space[cap_ptr + 6] = 0; // Padding.
         this.pci_space[cap_ptr + 7] = 0; // Padding.
 
@@ -758,10 +847,10 @@ VirtIO.prototype.init_capabilities = function(capabilities)
         this.pci_space[cap_ptr + 10] = (cap.offset >>> 16) & 0xFF;
         this.pci_space[cap_ptr + 11] = cap.offset >>> 24;
 
-        this.pci_space[cap_ptr + 12] = bar_size & 0xFF;
-        this.pci_space[cap_ptr + 13] = (bar_size >>> 8) & 0xFF;
-        this.pci_space[cap_ptr + 14] = (bar_size >>> 16) & 0xFF;
-        this.pci_space[cap_ptr + 15] = bar_size >>> 24;
+        this.pci_space[cap_ptr + 12] = region_length & 0xFF;
+        this.pci_space[cap_ptr + 13] = (region_length >>> 8) & 0xFF;
+        this.pci_space[cap_ptr + 14] = (region_length >>> 16) & 0xFF;
+        this.pci_space[cap_ptr + 15] = region_length >>> 24;
 
         for(const [i, extra_byte] of cap.extra.entries())
         {
@@ -776,89 +865,104 @@ VirtIO.prototype.init_capabilities = function(capabilities)
 
         let port = cap.port + cap.offset;
 
-        for(const field of cap.struct)
+        if(cap.struct)
         {
-            let read = field.read;
-            let write = field.write;
-
-            if(DEBUG)
+            for(const field of cap.struct)
             {
-                read = () =>
+                let read = field.read;
+                let write = field.write;
+
+                if(DEBUG)
                 {
-                    const val = field.read();
+                    read = () =>
+                    {
+                        const val = field.read();
 
-                    dbg_log("Device<" + this.name + "> " +
-                            "cap[" + cap.type + "] " +
-                            "read[" + field.name + "] " +
-                            "=> " + h(val, field.bytes * 8),
-                        LOG_VIRTIO);
+                        dbg_log("Device<" + this.name + "> " +
+                                "cap[" + cap.type + "] " +
+                                "read[" + field.name + "] " +
+                                "=> " + h(val, field.bytes * 8),
+                            LOG_VIRTIO);
 
-                    return val;
-                };
-                write = data =>
+                        return val;
+                    };
+                    write = data =>
+                    {
+                        dbg_log("Device<" + this.name + "> " +
+                                "cap[" + cap.type + "] " +
+                                "write[" + field.name + "] " +
+                                "<= " + h(data, field.bytes * 8),
+                            LOG_VIRTIO);
+
+                        field.write(data);
+                    };
+                }
+
+                if(cap.use_mmio)
                 {
-                    dbg_log("Device<" + this.name + "> " +
-                            "cap[" + cap.type + "] " +
-                            "write[" + field.name + "] " +
-                            "<= " + h(data, field.bytes * 8),
-                        LOG_VIRTIO);
+                    dbg_assert(false, "VirtIO device <" + this.name + "> mmio capability not implemented.");
+                }
+                else
+                {
+                    // DSL (2.4 kernel) does these reads
+                    const shim_read8_on_16 = function(addr)
+                    {
+                        dbg_log("Warning: 8-bit read from 16-bit virtio port", LOG_VIRTIO);
+                        return read(addr & ~1) >> ((addr & 1) << 3) & 0xFF;
+                    };
+                    const shim_read8_on_32 = function(addr)
+                    {
+                        dbg_log("Warning: 8-bit read from 32-bit virtio port", LOG_VIRTIO);
+                        return read(addr & ~3) >> ((addr & 3) << 3) & 0xFF;
+                    };
 
-                    field.write(data);
-                };
+                    // archhurd does these reads
+                    const shim_read32_on_16 = function(addr)
+                    {
+                        dbg_log("Warning: 32-bit read from 16-bit virtio port", LOG_VIRTIO);
+                        return read(addr);
+                    };
+
+                    switch(field.bytes)
+                    {
+                        case 4:
+                            this.cpu.io.register_read(port, this, shim_read8_on_32, undefined, read);
+                            this.cpu.io.register_read(port + 1, this, shim_read8_on_32);
+                            this.cpu.io.register_read(port + 2, this, shim_read8_on_32);
+                            this.cpu.io.register_read(port + 3, this, shim_read8_on_32);
+                            this.cpu.io.register_write(port, this, undefined, undefined, write);
+                            break;
+                        case 2:
+                            this.cpu.io.register_read(port, this, shim_read8_on_16, read, shim_read32_on_16);
+                            this.cpu.io.register_read(port + 1, this, shim_read8_on_16);
+                            this.cpu.io.register_write(port, this, undefined, write);
+                            break;
+                        case 1:
+                            this.cpu.io.register_read(port, this, read);
+                            this.cpu.io.register_write(port, this, write);
+                            break;
+                        default:
+                            dbg_assert(false,
+                                "VirtIO device <" + this.name + "> invalid port i/o capability field width of " +
+                                field.bytes + " bytes");
+                            break;
+                    }
+                }
+
+                port += field.bytes;
             }
-
+        }
+        else if(cap.bytearray)
+        {
             if(cap.use_mmio)
             {
-                dbg_assert(false, "VirtIO device <" + this.name + "> mmio capability not implemented.");
+                // mmio shmem
+                this.cpu.io.mmap_register(port, cap.bytearray.bytes, cap.bytearray.read, cap.bytearray.write);
             }
             else
             {
-                // DSL (2.4 kernel) does these reads
-                const shim_read8_on_16 = function(addr)
-                {
-                    dbg_log("Warning: 8-bit read from 16-bit virtio port", LOG_VIRTIO);
-                    return read(addr & ~1) >> ((addr & 1) << 3) & 0xFF;
-                };
-                const shim_read8_on_32 = function(addr)
-                {
-                    dbg_log("Warning: 8-bit read from 32-bit virtio port", LOG_VIRTIO);
-                    return read(addr & ~3) >> ((addr & 3) << 3) & 0xFF;
-                };
-
-                // archhurd does these reads
-                const shim_read32_on_16 = function(addr)
-                {
-                    dbg_log("Warning: 32-bit read from 16-bit virtio port", LOG_VIRTIO);
-                    return read(addr);
-                };
-
-                switch(field.bytes)
-                {
-                    case 4:
-                        this.cpu.io.register_read(port, this, shim_read8_on_32, undefined, read);
-                        this.cpu.io.register_read(port + 1, this, shim_read8_on_32);
-                        this.cpu.io.register_read(port + 2, this, shim_read8_on_32);
-                        this.cpu.io.register_read(port + 3, this, shim_read8_on_32);
-                        this.cpu.io.register_write(port, this, undefined, undefined, write);
-                        break;
-                    case 2:
-                        this.cpu.io.register_read(port, this, shim_read8_on_16, read, shim_read32_on_16);
-                        this.cpu.io.register_read(port + 1, this, shim_read8_on_16);
-                        this.cpu.io.register_write(port, this, undefined, write);
-                        break;
-                    case 1:
-                        this.cpu.io.register_read(port, this, read);
-                        this.cpu.io.register_write(port, this, write);
-                        break;
-                    default:
-                        dbg_assert(false,
-                            "VirtIO device <" + this.name + "> invalid capability field width of " +
-                            field.bytes + " bytes");
-                        break;
-                }
+                dbg_assert(false, "VirtIO device <" + this.name + "> port io bytearray not implemented.");
             }
-
-            port += field.bytes;
         }
     }
 
