@@ -30,31 +30,7 @@ export function IO(cpu)
 
     var memory_size = cpu.memory_size[0];
 
-    for(var i = 0; (i << MMAP_BLOCK_BITS) < memory_size; i++)
-    {
-        // avoid sparse arrays
-        cpu.memory_map_read8[i] = cpu.memory_map_write8[i] = undefined;
-        cpu.memory_map_read32[i] = cpu.memory_map_write32[i] = undefined;
-    }
-
-    this.mmap_register(memory_size, MMAP_MAX - memory_size,
-        function(addr) {
-            // read outside of the memory size
-            dbg_log("Read from unmapped memory space, addr=" + h(addr >>> 0, 8), LOG_IO);
-            return 0xFF;
-        },
-        function(addr, value) {
-            // write outside of the memory size
-            dbg_log("Write to unmapped memory space, addr=" + h(addr >>> 0, 8) + " value=" + h(value, 2), LOG_IO);
-        },
-        function(addr) {
-            dbg_log("Read from unmapped memory space, addr=" + h(addr >>> 0, 8), LOG_IO);
-            return -1;
-        },
-        function(addr, value) {
-            dbg_log("Write to unmapped memory space, addr=" + h(addr >>> 0, 8) + " value=" + h(value >>> 0, 8), LOG_IO);
-        }
-    );
+    this.mmap_unmap(memory_size, MMAP_MAX - memory_size);
 }
 
 IO.prototype.create_empty_entry = function()
@@ -308,6 +284,52 @@ IO.prototype.mmap_register = function(addr, size, read_func8, write_func8, read_
     }
 };
 
+
+/**
+ * @param {number} addr
+ * @param {number} size
+ */
+IO.prototype.mmap_unmap = function(addr, size)
+{
+    dbg_log("mmap_unmap addr=" + h(addr >>> 0, 8) + " size=" + h(size, 8), LOG_IO);
+
+    dbg_assert((addr & MMAP_BLOCK_SIZE - 1) === 0);
+    dbg_assert(size && (size & MMAP_BLOCK_SIZE - 1) === 0);
+
+    var aligned_addr = addr >>> MMAP_BLOCK_BITS;
+
+    var read_func8 = function(addr) {
+        dbg_log("Read from unmapped memory space, addr=" + h(addr >>> 0, 8), LOG_IO);
+        return 0xFF;
+    };
+    var write_func8 = function(addr, value) {
+        dbg_log("Write to unmapped memory space, addr=" + h(addr >>> 0, 8) + " value=" + h(value, 2), LOG_IO);
+    };
+    var read_func32 = function(addr) {
+        dbg_log("Read from unmapped memory space, addr=" + h(addr >>> 0, 8), LOG_IO);
+        return -1;
+    };
+    var write_func32 = function(addr, value) {
+        dbg_log("Write to unmapped memory space, addr=" + h(addr >>> 0, 8) + " value=" + h(value >>> 0, 8), LOG_IO);
+    };
+
+    for(; size > 0; aligned_addr++)
+    {
+        if(aligned_addr << MMAP_BLOCK_BITS > this.cpu.memory_size[0]) {
+            this.cpu.memory_map_read8[aligned_addr] = read_func8;
+            this.cpu.memory_map_write8[aligned_addr] = write_func8;
+            this.cpu.memory_map_read32[aligned_addr] = read_func32;
+            this.cpu.memory_map_write32[aligned_addr] = write_func32;
+        } else {
+            this.cpu.memory_map_read8[aligned_addr] = undefined;
+            this.cpu.memory_map_write8[aligned_addr] = undefined;
+            this.cpu.memory_map_read32[aligned_addr] = undefined;
+            this.cpu.memory_map_write32[aligned_addr] = undefined;
+        }
+
+        size -= MMAP_BLOCK_SIZE;
+    }
+};
 
 IO.prototype.port_write8 = function(port_addr, data)
 {

@@ -243,6 +243,7 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
     this.pci_bars = [
         {
             size: this.vga_memory_size,
+            fixed_offset: true, // svga is handled in rust
         },
     ];
 
