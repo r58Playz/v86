@@ -313,9 +313,11 @@ IO.prototype.mmap_unmap = function(addr, size)
         dbg_log("Write to unmapped memory space, addr=" + h(addr >>> 0, 8) + " value=" + h(value >>> 0, 8), LOG_IO);
     };
 
+    var memory_size = this.cpu.memory_size[0] >>> MMAP_BLOCK_BITS;
+
     for(; size > 0; aligned_addr++)
     {
-        if(aligned_addr << MMAP_BLOCK_BITS > this.cpu.memory_size[0]) {
+        if(aligned_addr >= memory_size) {
             this.cpu.memory_map_read8[aligned_addr] = read_func8;
             this.cpu.memory_map_write8[aligned_addr] = write_func8;
             this.cpu.memory_map_read32[aligned_addr] = read_func32;
