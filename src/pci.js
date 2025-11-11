@@ -423,7 +423,7 @@ PCI.prototype.pci_write32 = function(address, written)
 
                     if(bar.fixed_offset)
                     {
-                        dbg_log("BLOCKED memory bar change from " + h(from) + " to " + h(to) + "size=" + bar.size, LOG_PCI);
+                        dbg_log("BLOCKED memory bar change from " + h(from) + " to " + h(to) + " size=" + bar.size, LOG_PCI);
                     }
                     else if(to !== from)
                     {
@@ -432,17 +432,17 @@ PCI.prototype.pci_write32 = function(address, written)
                         space[space_addr] = to | (space[space_addr] & 0xF);
                     }
                 }
+            }
 
-                if(type === 1)
-                {
-                    // io
-                    var from = space[space_addr] & ~1 & 0xFFFF;
-                    var to = written & ~1 & 0xFFFF;
-                    dbg_log("io bar changed from " + h(from >>> 0, 8) +
-                            " to " + h(to >>> 0, 8) + " size=" + bar.size, LOG_PCI);
-                    this.set_io_bars(bar, from, to);
-                    space[space_addr] = written | 1;
-                }
+            if(type === 1)
+            {
+                // io
+                var from = space[space_addr] & ~1 & 0xFFFF;
+                var to = written & ~1 & 0xFFFF;
+                dbg_log("io bar changed from " + h(from >>> 0, 8) +
+                        " to " + h(to >>> 0, 8) + " size=" + bar.size, LOG_PCI);
+                this.set_io_bars(bar, from, to);
+                space[space_addr] = written | 1;
             }
         }
         else
