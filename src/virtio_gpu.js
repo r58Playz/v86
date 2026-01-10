@@ -183,6 +183,7 @@ var GpuGuestBackingBufferInfo;
  *     height: number,
  *     guest_backing: !Array<GpuGuestBackingBufferInfo>,
  *     host_backing: LazyBuffer,
+ *     host_backing_len: number,
  * }}
  */
 var Gpu2dResource;
@@ -419,6 +420,7 @@ VirtioGpu.prototype.process_request = function (queue) {
             height,
             guest_backing: [],
             host_backing,
+            host_backing_len: host_size,
         };
         this.send_packet(queue, bufchain, VIRTIO_GPU_RESP_OK_NODATA, new Uint8Array(0), {});
     }
@@ -493,15 +495,16 @@ VirtioGpu.prototype.process_request = function (queue) {
         dbg_assert(resource, "virtio-gpu: rid " + resource_id + " doesn't exist");
         dbg_assert(!resource.guest_backing.length, "virtio-gpu: rid " + resource_id + "already has backing pages");
 
-        // TODO check scatter list size
-
         let backing = [];
+        let backing_len = 0;
         for(let i = 0; i < nr_entries; i++) {
             let [addr, length, _padding] = marshall.Unmarshall(["d", "w", "w"], packet, state);
             backing[i] = {
                 address: addr, length
             };
+            backing_len += length;
         }
+        dbg_assert(backing_len === resource.host_backing_len, "virtio-gpu: rid " + resource_id + " backing pages don't match host backing size " + backing_len + " !== " + resource.host_backing_len);
         resource.guest_backing = backing;
 
         this.send_packet(queue, bufchain, VIRTIO_GPU_RESP_OK_NODATA, new Uint8Array(0), {});
