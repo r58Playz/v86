@@ -32,6 +32,7 @@ import { VirtioNet } from "./virtio_net.js";
 import { VGAScreen } from "./vga.js";
 import { VirtioBalloon } from "./virtio_balloon.js";
 import { Virtio9p, Virtio9pHandler, Virtio9pProxy } from "../lib/9p.js";
+import { VirtioGpu } from "./virtio_gpu.js";
 
 import { load_kernel } from "./kernel.js";
 
@@ -1232,6 +1233,10 @@ CPU.prototype.init = function(settings, device_bus)
         if(settings.virtio_balloon)
         {
             this.devices.virtio_balloon = new VirtioBalloon(this, device_bus);
+        }
+        if(settings.virtio_gpu)
+        {
+            this.devices.virtio_gpu = new VirtioGpu(this, device_bus, settings.virtio_gpu.screen, settings.virtio_gpu.backend, settings.virtio_gpu.width, settings.virtio_gpu.height);
         }
 
         if(true)

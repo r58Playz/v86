@@ -1149,7 +1149,7 @@ VirtIO.prototype.lower_irq = function()
  * @param {CPU} cpu
  * @param {VirtQueue_Options} options
  */
-function VirtQueue(cpu, virtio, options)
+export function VirtQueue(cpu, virtio, options)
 {
     /** @const @type {CPU} */
     this.cpu = cpu;
@@ -1442,7 +1442,7 @@ VirtQueue.prototype.used_set_avail_event = function(value)
  * @param {VirtQueue} virtqueue
  * @param {number} head_idx
  */
-function VirtQueueBufferChain(virtqueue, head_idx)
+export function VirtQueueBufferChain(virtqueue, head_idx)
 {
     /** @const @type {CPU} */
     this.cpu = virtqueue.cpu;
