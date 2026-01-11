@@ -58,8 +58,9 @@ const VGA_HOST_MEMORY_SPACE_SIZE = Uint32Array.from([
  * @param {BusConnector} bus
  * @param {ScreenAdapter|DummyScreenAdapter} screen
  * @param {number} vga_memory_size
+ * @param {function(VGAScreen): void} [custom_register]
  */
-export function VGAScreen(cpu, bus, screen, vga_memory_size)
+export function VGAScreen(cpu, bus, screen, vga_memory_size, custom_register)
 {
     this.cpu = cpu;
 
@@ -386,7 +387,13 @@ export function VGAScreen(cpu, bus, screen, vga_memory_size)
         (addr, value) => this.vga_memory_write(addr, value),
     );
 
-    cpu.devices.pci.register_device(this);
+    if(custom_register)
+    {
+        custom_register(this);
+    }
+    else {
+        cpu.devices.pci.register_device(this);
+    }
 }
 
 VGAScreen.prototype.get_state = function()

@@ -117,6 +117,7 @@ var VirtQueue_Options;
 /**
  * @typedef {
  * {
+ *     bar_override: (undefined|number),
  *     initial_port: number,
  *     queues: !Array<VirtQueue_Options>,
  *     features: !Array<number>,
@@ -128,6 +129,7 @@ var VirtIO_CommonCapabilityOptions;
 /**
  * @typedef {
  * {
+ *     bar_override: (undefined|number),
  *     initial_port: number,
  *     single_handler: boolean,
  *     handlers: !Array<function()>,
@@ -138,6 +140,7 @@ var VirtIO_NotificationCapabilityOptions;
 /**
  * @typedef {
  * {
+ *     bar_override: (undefined|number),
  *     initial_port: number,
  * }}
  */
@@ -146,6 +149,7 @@ var VirtIO_ISRCapabilityOptions;
 /**
  * @typedef {
  * {
+ *     bar_override: (undefined|number),
  *     initial_port: number,
  *     struct: VirtIO_CapabilityStruct,
  * }}
@@ -155,6 +159,7 @@ var VirtIO_DeviceSpecificCapabilityOptions;
 /**
  * @typedef {
  * {
+ *     bar_override: (undefined|number),
  *     initial_port: number,
  *     id: (undefined | number),
  *     backing: Uint8Array
@@ -174,6 +179,7 @@ var VirtIO_ShmemCapabilityOptions;
  *     isr_status: VirtIO_ISRCapabilityOptions,
  *     device_specific: (undefined | VirtIO_DeviceSpecificCapabilityOptions),
  *     shmem: (undefined | VirtIO_ShmemCapabilityOptions),
+ *     custom_register: (undefined | function(VirtIO): void),
  * }}
  */
 var VirtIO_Options;
@@ -338,7 +344,13 @@ export function VirtIO(cpu, options)
     }
     this.init_capabilities(capabilities);
 
-    cpu.devices.pci.register_device(this);
+    if(options.custom_register)
+    {
+        options.custom_register(this);
+    }
+    else {
+        cpu.devices.pci.register_device(this);
+    }
     this.reset();
 }
 
@@ -350,7 +362,7 @@ VirtIO.prototype.create_common_capability = function(options)
 {
     return {
         type: VIRTIO_PCI_CAP_COMMON_CFG,
-        bar: 0,
+        bar: options.bar_override || 0,
         port: options.initial_port,
         id: 0,
         use_mmio: false,
@@ -666,7 +678,7 @@ VirtIO.prototype.create_notification_capability = function(options)
 
     return {
         type: VIRTIO_PCI_CAP_NOTIFY_CFG,
-        bar: 1,
+        bar: options.bar_override || 1,
         port: options.initial_port,
         id: 0,
         use_mmio: false,
@@ -690,7 +702,7 @@ VirtIO.prototype.create_isr_capability = function(options)
 {
     return {
         type: VIRTIO_PCI_CAP_ISR_CFG,
-        bar: 2,
+        bar: options.bar_override || 2,
         port: options.initial_port,
         id: 0,
         use_mmio: false,
@@ -725,7 +737,7 @@ VirtIO.prototype.create_device_specific_capability = function(options)
 
     return {
         type: VIRTIO_PCI_CAP_DEVICE_CFG,
-        bar: 3,
+        bar: options.bar_override || 3,
         port: options.initial_port,
         id: 0,
         use_mmio: false,
@@ -743,7 +755,7 @@ VirtIO.prototype.create_shmem_capability = function(options)
 {
     return {
         type: VIRTIO_PCI_CAP_SHARED_MEMORY_CFG,
-        bar: 4,
+        bar: options.bar_override || 4,
         port: options.initial_port,
         id: options.id || 0,
         use_mmio: true,

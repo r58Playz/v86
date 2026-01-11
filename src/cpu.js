@@ -1172,7 +1172,16 @@ CPU.prototype.init = function(settings, device_bus)
 
         this.devices.dma = new DMA(this);
 
-        this.devices.vga = new VGAScreen(this, device_bus, settings.screen, settings.vga_memory_size || 8 * 1024 * 1024);
+        if(settings.virtio_gpu)
+        {
+            let opts = settings.virtio_gpu;
+            let vga_memory_size = settings.vga_memory_size || 8 * 1024 * 1024;
+            this.devices.virtio_gpu = new VirtioGpu(this, device_bus, opts.backend, vga_memory_size, settings.screen, opts.width, opts.height);
+            this.devices.vga = this.devices.virtio_gpu.vga;
+        }
+        else {
+            this.devices.vga = new VGAScreen(this, device_bus, settings.screen, settings.vga_memory_size || 8 * 1024 * 1024);
+        }
 
         this.devices.ps2 = new PS2(this, device_bus);
 
@@ -1233,10 +1242,6 @@ CPU.prototype.init = function(settings, device_bus)
         if(settings.virtio_balloon)
         {
             this.devices.virtio_balloon = new VirtioBalloon(this, device_bus);
-        }
-        if(settings.virtio_gpu)
-        {
-            this.devices.virtio_gpu = new VirtioGpu(this, device_bus, settings.virtio_gpu.screen, settings.virtio_gpu.backend, settings.virtio_gpu.width, settings.virtio_gpu.height);
         }
 
         if(true)

@@ -8,6 +8,7 @@ import { CPU } from "./cpu.js";
 import { BusConnector } from "./bus.js";
 import { ScreenAdapter } from "./browser/screen.js";
 import { VirtQueueBufferChain } from "./virtio.js";
+import { VGAScreen } from "./vga.js";
 
 // https://docs.oasis-open.org/virtio/virtio/v1.4/csprd01/virtio-v1.4-csprd01.html#x1-4730007
 
@@ -184,6 +185,7 @@ var GpuGuestBackingBufferInfo;
  *     height: number,
  *     guest_backing: !Array<GpuGuestBackingBufferInfo>,
  *     host_backing: LazyBuffer,
+ *     host_image_data: ImageData,
  *     host_backing_len: number,
  * }}
  */
@@ -194,12 +196,13 @@ var Gpu2dResource;
  *
  * @param {CPU} cpu
  * @param {BusConnector} bus
- * @param {ScreenAdapter} screen
  * @param {GpuBackend} backend
+ * @param {number} vga_memory_size
+ * @param {ScreenAdapter} screen
  * @param {number} width
  * @param {number} height
  */
-export function VirtioGpu(cpu, bus, screen, backend, width, height) {
+export function VirtioGpu(cpu, bus, backend, vga_memory_size, screen, width, height) {
     if(!backend) {
         backend = {};
     }
@@ -219,6 +222,8 @@ export function VirtioGpu(cpu, bus, screen, backend, width, height) {
         }
     };
     this.glaccel = backend.glaccel;
+
+    this.vga_compat_enabled = true;
 
     this.events = 0;
 
@@ -245,6 +250,7 @@ export function VirtioGpu(cpu, bus, screen, backend, width, height) {
             subsystem_device_id: 16,
             common:
             {
+                bar_override: 1,
                 initial_port: 0xE800,
                 features:
                     [
@@ -265,6 +271,7 @@ export function VirtioGpu(cpu, bus, screen, backend, width, height) {
             },
             notification:
             {
+                bar_override: 2,
                 initial_port: 0xE900,
                 single_handler: true,
                 handlers:
@@ -279,10 +286,12 @@ export function VirtioGpu(cpu, bus, screen, backend, width, height) {
             },
             isr_status:
             {
+                bar_override: 3,
                 initial_port: 0xE700,
             },
             device_specific:
             {
+                bar_override: 4,
                 initial_port: 0xE600,
                 struct:
                     [
@@ -315,11 +324,33 @@ export function VirtioGpu(cpu, bus, screen, backend, width, height) {
             /*
             shmem:
             {
+                bar_override: 5,
                 initial_port: 0xC0000000,
                 id: VIRTIO_GPU_SHM_ID_HOST_VISIBLE,
                 backing: new Uint8Array() // TODO
             }
             */
+            custom_register: (virtio) => {
+                this.vga = new VGAScreen(cpu, bus, screen, vga_memory_size, (vga) => {
+                    // BAR0
+                    virtio.pci_bars[0] = vga.pci_bars[0];
+                    virtio.pci_space[16] = vga.pci_space[16];
+                    virtio.pci_space[17] = vga.pci_space[17];
+                    virtio.pci_space[18] = vga.pci_space[18];
+                    virtio.pci_space[19] = vga.pci_space[19];
+
+                    virtio.pci_rom_size = vga.pci_rom_size;
+                    virtio.pci_rom_address = vga.pci_rom_address;
+                });
+                // Prog IF - VGA Controller
+                virtio.pci_space[9] = 0x0;
+                // Subclass - VGA Compatible Controller
+                virtio.pci_space[10] = 0x0;
+                // Class - Display Controller
+                virtio.pci_space[11] = 0x3;
+
+                cpu.devices.pci.register_device(virtio);
+            }
         });
 }
 
@@ -377,6 +408,33 @@ VirtioGpu.prototype.send_event = function (event) {
     this.virtio.notify_config_changes();
 };
 
+VirtioGpu.prototype.flush_to_imagedata = function (host, backing_width, backing_height, format, image_data, x, y, width, height) {
+    let pixel_size = this.pixel_size_from_format(format);
+    let image = image_data.data;
+
+    dbg_assert(y + height <= backing_height, "virtio-gpu: invalid y offset while flushing");
+
+    for(let i = 0; i < height; i++) {
+        let cur_y = y + i;
+        for(let j = 0; j < width; j++) {
+            let cur_x = x + j;
+            let base_addr_host = cur_y * backing_width * pixel_size + cur_x * pixel_size;
+            let base_addr_image = cur_y * backing_width * 4 + cur_x * 4;
+
+            switch(format) {
+                case VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM:
+                    image[base_addr_image] = host[base_addr_host + 2]; // R
+                    image[base_addr_image + 1] = host[base_addr_host + 1]; // G
+                    image[base_addr_image + 2] = host[base_addr_host]; // B
+                    image[base_addr_image + 3] = 255; // A
+                    break;
+                default:
+                    dbg_assert(false, "virtio-gpu: unable to flush format " + h(format) + " to imagedata");
+            }
+        }
+    }
+};
+
 VirtioGpu.prototype.pixel_size_from_format = function (format) {
     // all the current formats are 4 bytes per pixel
     return 4;
@@ -421,6 +479,7 @@ VirtioGpu.prototype.process_request = function (queue) {
             height,
             guest_backing: [],
             host_backing,
+            host_image_data: new ImageData(width, height),
             host_backing_len: host_size,
         };
         this.send_packet(queue, bufchain, VIRTIO_GPU_RESP_OK_NODATA, new Uint8Array(0), {});
@@ -448,6 +507,7 @@ VirtioGpu.prototype.process_request = function (queue) {
         } else {
             dbg_assert(this.resources[resource_id], "virtio-gpu: rid " + resource_id + " doesn't exist");
             dbg_assert(width >= display.width && height >= display.height, "virtio-gpu: scanout rectangle for rid " + resource_id + " doesn't cover display id " + scanout_id);
+            this.exit_vga_compat();
 
             display.scanout = {
                 x,
@@ -467,7 +527,7 @@ VirtioGpu.prototype.process_request = function (queue) {
         let resource = this.resources[resource_id];
         dbg_assert(resource, "virtio-gpu: rid " + resource_id + " doesn't exist");
 
-        // TODO properly implement this
+        this.flush_to_imagedata(resource.host_backing(), resource.width, resource.height, resource.format, resource.host_image_data, x, y, width, height);
 
         this.send_packet(queue, bufchain, VIRTIO_GPU_RESP_OK_NODATA, new Uint8Array(0), {});
     }
@@ -524,4 +584,38 @@ VirtioGpu.prototype.process_request = function (queue) {
     else {
         dbg_assert(false, "virtio-gpu: unimplemented command type " + h(type));
     }
+};
+
+VirtioGpu.prototype.exit_vga_compat = function()
+{
+    if(!this.vga_compat_enabled) return;
+    dbg_log("Device<virtio-gpu>: exiting vga compat", LOG_VIRTIO);
+
+    this.vga_compat_enabled = false;
+    this.displays[0].screen.set_mode(true);
+    this.displays[0].screen.set_size_graphical(this.displays[0].width, this.displays[0].height, this.displays[0].width, this.displays[0].height);
+};
+
+VirtioGpu.prototype.screen_fill_buffer = function()
+{
+    if(this.vga_compat_enabled) {
+        this.vga.screen_fill_buffer();
+        return;
+    }
+
+    const display = this.displays[0];
+    if(!display.scanout) return;
+
+    const resource = this.resources[display.scanout.resource];
+    if(!resource) return;
+
+    display.screen.update_buffer([{
+        image_data: resource.host_image_data,
+        screen_x: 0,
+        screen_y: 0,
+        buffer_x: 0,
+        buffer_y: 0,
+        buffer_width: resource.width,
+        buffer_height: resource.height,
+    }]);
 };

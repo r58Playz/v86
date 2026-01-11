@@ -235,6 +235,7 @@ V86.prototype.continue_init = async function(emulator, options)
     settings.cpuid_level = options.cpuid_level;
     settings.virtio_balloon = options.virtio_balloon;
     settings.virtio_console = options.virtio_console;
+    settings.virtio_gpu = options.virtio_gpu;
 
     const relay_url = options.network_relay_url || options.net_device && options.net_device.relay_url;
     if(relay_url)
@@ -280,7 +281,11 @@ V86.prototype.continue_init = async function(emulator, options)
 
     if(screen_options.container)
     {
-        this.screen_adapter = new ScreenAdapter(screen_options, () => this.v86.cpu.devices.vga && this.v86.cpu.devices.vga.screen_fill_buffer());
+        this.screen_adapter = new ScreenAdapter(screen_options, () => {
+            let devices = this.v86.cpu.devices;
+            if(devices.virtio_gpu) devices.virtio_gpu.screen_fill_buffer();
+            else if(devices.vga) devices.vga.screen_fill_buffer();
+        });
     }
     else
     {
