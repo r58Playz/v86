@@ -9,13 +9,14 @@ import { BusConnector } from "./bus.js";
 import { ScreenAdapter } from "./browser/screen.js";
 import { VirtQueueBufferChain } from "./virtio.js";
 
-// https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.html#x1-3960007
+// https://docs.oasis-open.org/virtio/virtio/v1.4/csprd01/virtio-v1.4-csprd01.html#x1-4730007
 
 const VIRTIO_GPU_F_VIRGL = 0;
 const VIRTIO_GPU_F_EDID = 1;
 const VIRTIO_GPU_F_RESOURCE_UUID = 2;
 const VIRTIO_GPU_F_RESOURCE_BLOB = 3;
 const VIRTIO_GPU_F_CONTEXT_INIT = 4;
+const VIRTIO_GPU_F_BLOB_ALIGNMENT = 5;
 
 const VIRTIO_GPU_EVENT_DISPLAY = 1 << 0;
 
