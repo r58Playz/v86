@@ -408,29 +408,42 @@ VirtioGpu.prototype.send_event = function (event) {
     this.virtio.notify_config_changes();
 };
 
+VirtioGpu.prototype.get_copies_for_box = function (buf_width, buf_height, buf_pixel_size, x, y, width, height, pixel_size) {
+    dbg_assert(y + height <= buf_height, "virtio-gpu: invalid y offset for box");
+
+    let copies = [];
+    for(let i = 0; i < height; i++) {
+        copies.push({
+            from_offset: ((y + i) * buf_width * buf_pixel_size) + x * buf_pixel_size, from_length: width * buf_pixel_size,
+            to_offset: ((y + i) * buf_width * pixel_size) + x * pixel_size,
+        });
+    }
+    return copies;
+};
+
 VirtioGpu.prototype.flush_to_imagedata = function (host, backing_width, backing_height, format, image_data, x, y, width, height) {
     let pixel_size = this.pixel_size_from_format(format);
     let image = image_data.data;
 
-    dbg_assert(y + height <= backing_height, "virtio-gpu: invalid y offset while flushing");
+    for(let copy of this.get_copies_for_box(backing_width, backing_height, pixel_size, x, y, width, height, 4)) {
+        let from = copy.from_offset;
+        let to = copy.to_offset;
+        let len = copy.from_length;
 
-    for(let i = 0; i < height; i++) {
-        let cur_y = y + i;
-        for(let j = 0; j < width; j++) {
-            let cur_x = x + j;
-            let base_addr_host = cur_y * backing_width * pixel_size + cur_x * pixel_size;
-            let base_addr_image = cur_y * backing_width * 4 + cur_x * 4;
-
+        while(len !== 0) {
             switch(format) {
                 case VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM:
-                    image[base_addr_image] = host[base_addr_host + 2]; // R
-                    image[base_addr_image + 1] = host[base_addr_host + 1]; // G
-                    image[base_addr_image + 2] = host[base_addr_host]; // B
-                    image[base_addr_image + 3] = 255; // A
+                    image[to    ] = host[from + 2]; // R
+                    image[to + 1] = host[from + 1]; // G
+                    image[to + 2] = host[from    ]; // B
+                    image[to + 3] = 255           ; // A
                     break;
                 default:
                     dbg_assert(false, "virtio-gpu: unable to flush format " + h(format) + " to imagedata");
             }
+            from += pixel_size;
+            to += 4;
+            len -= pixel_size;
         }
     }
 };
@@ -532,18 +545,41 @@ VirtioGpu.prototype.process_request = function (queue) {
         this.send_packet(queue, bufchain, VIRTIO_GPU_RESP_OK_NODATA, new Uint8Array(0), {});
     }
     else if(type === VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D) {
-        let [x, y, width, height, offset, resource_id] = marshall.Unmarshall(["w", "w", "w", "w", "d", "w"], packet, { offset: 0 });
-        dbg_log("Device<virtio-gpu>: rid " + resource_id + " transfer from guest with offset " + offset + " and rectangle " + [x, y, width, height].join(" "), LOG_VIRTIO);
+        let [x, y, width, height, pkt_offset, resource_id] = marshall.Unmarshall(["w", "w", "w", "w", "d", "w"], packet, { offset: 0 });
+        dbg_log("Device<virtio-gpu>: rid " + resource_id + " transfer from guest with offset " + pkt_offset + " and rectangle " + [x, y, width, height].join(" "), LOG_VIRTIO);
 
         let resource = this.resources[resource_id];
         dbg_assert(resource, "virtio-gpu: rid " + resource_id + " doesn't exist");
         dbg_assert(resource.guest_backing.length, "virtio-gpu: rid " + resource_id + " doesn't have backing pages");
+        dbg_assert(x + width <= resource.width && y + height <= resource.height, "virtio-gpu: transfer bounds outside resource bounds");
 
+        let pixel_size = this.pixel_size_from_format(resource.format);
         let host = resource.host_backing();
-        for(let backing of resource.guest_backing) {
-            let guest = this.cpu.read_blob(backing.address, backing.length);
-            host.subarray(offset).set(guest);
-            offset += backing.length;
+        let backings = resource.guest_backing;
+
+        // don't double count the memory from 0,0 to x,y
+        let offset = pkt_offset - ((y * resource.width * pixel_size) + (x * pixel_size));
+
+        for(let copy of this.get_copies_for_box(resource.width, resource.height, pixel_size, x, y, width, height, pixel_size)) {
+            let from = copy.from_offset + offset;
+            let to = copy.to_offset;
+            let len = copy.from_length;
+
+            while(len !== 0) {
+                let backing_id = 0;
+                while(from >= backings[backing_id].length) {
+                    from -= backings[backing_id].length;
+                    backing_id++;
+                }
+                let guest_len = Math.min(backings[backing_id].length - from, len);
+
+                let guest = this.cpu.read_blob(backings[backing_id].address + from, guest_len);
+                host.subarray(to).set(guest);
+
+                from = 0;
+                to += guest_len;
+                len -= guest_len;
+            }
         }
 
         this.send_packet(queue, bufchain, VIRTIO_GPU_RESP_OK_NODATA, new Uint8Array(0), {});
